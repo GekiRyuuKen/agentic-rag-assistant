@@ -1,8 +1,28 @@
+import re
 import os
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 DATA_DIR = "data"
+
+def trim_references(text):
+    """Cut text at the References/Bibliography section, wherever it starts."""
+    search_start = len(text) // 2  # only look in the back half, avoids false matches mid-paper
+    tail = text[search_start:]
+
+    match = re.search(r"\bREFERENCES\b|\bReferences\b|\bBibliography\b", tail)
+    if match:
+        cut_point = search_start + match.start()
+        return text[:cut_point]
+    return text
+
+def is_likely_navigation(text, max_avg_line_length=25):
+    """Detect nav-menu-style chunks: many short lines (letter-spaced sidebar text)."""
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if len(lines) < 3:
+        return False
+    avg_len = sum(len(l) for l in lines) / len(lines)
+    return avg_len < max_avg_line_length
 
 def load_documents(data_dir=DATA_DIR):
     """Load all PDFs from the data folder and extract their text."""
@@ -14,6 +34,7 @@ def load_documents(data_dir=DATA_DIR):
             text = ""
             for page in reader.pages:
                 text += page.extract_text() + "\n"
+            text = trim_references(text)
             documents.append({"source": filename, "text": text})
             print(f"Loaded {filename} - {len(text)} characters")
     return documents
@@ -45,6 +66,8 @@ def filter_noise(chunks, min_length=100):
             continue # too short, likely nav/TOC fragment
         if any(keyword in text_lower for keyword in noise_keywords):
             continue # likely boilerplate
+        if is_likely_navigation(chunk["text"]):
+            continue # likely navigation menu
         filtered.append(chunk)
     return filtered
 

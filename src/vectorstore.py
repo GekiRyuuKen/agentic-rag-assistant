@@ -5,7 +5,7 @@ from ingest import load_documents, chunk_documents, filter_noise
 # Load embedding model - runs on CPU to keep GPU free for Ollama/LLama
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
 
-def build_vectorstore(chunks, persist_dir="chroma_db", collection_name="nrql_docs"):
+def build_vectorstore(chunks, persist_dir="chroma_db", collection_name="rag_papers"):
     """Embed chunks and store them in a persistent ChromaDB collection."""
     client = chromadb.PersistentClient(path=persist_dir)
 
@@ -32,7 +32,7 @@ def build_vectorstore(chunks, persist_dir="chroma_db", collection_name="nrql_doc
     print(f"Stored {collection.count()} chunks in ChromaDB collection '{collection_name}'.")
     return collection
 
-def query_vectorstore(query, persist_dir="chroma_db", collection_name="nrql_docs", n_results=3):
+def query_vectorstore(query, persist_dir="chroma_db", collection_name="rag_papers", n_results=3):
     """Test retrieval - embed a query and find the most similar chunks."""
     client = chromadb.PersistentClient(path=persist_dir)
     collection = client.get_collection(collection_name)
@@ -49,7 +49,7 @@ if __name__ == "__main__":
     build_vectorstore(chunks)
 
     # Quick retrieval test
-    test_query = "How do I use SINCE and UNTIL in NRQL?"
+    test_query = "What is the difference between naive RAG and agentic RAG?"
     print(f"\n--- Test query: '{test_query}' ---")
     results = query_vectorstore(test_query)
 
