@@ -2,6 +2,11 @@ import ollama
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
 from vectorstore import query_vectorstore
+from dotenv import load_dotenv
+from langfuse import observe, get_client
+
+load_dotenv()
+langfuse = get_client()
 
 LLM_MODEL = "llama3.1:8b"
 MAX_RETRIES = 2
@@ -16,6 +21,7 @@ class AgentState(TypedDict):
     retry_count: int
 
 # ---- Node 1: Retrieve ----
+@observe()
 def retrieve(state: AgentState) -> AgentState:
     print(f"\n[RETRIEVE] Searching for: '{state['question']}'")
     results = query_vectorstore(state["question"], n_results=6)
@@ -24,6 +30,7 @@ def retrieve(state: AgentState) -> AgentState:
     return {**state, "documents": docs, "sources": sources}
 
 # ---- Node 2: Grade documents (this is the "agentic" judgement step) ----
+@observe()
 def grade_documents(state: AgentState) -> AgentState:
     print("[GRADE] Evaluating relevance of retrieved chunks...")
     relevant_docs = []
@@ -59,7 +66,7 @@ Reply with only one word: "yes" or "no"."""
 
 # ---- Conditional edge: decide next step based on grading ----
 def decide_next_step(state: AgentState) -> str:
-    if len(state["documents"]) > 0:
+    if len(state["documents"]) >= 2:
         return "generate"
     elif state["retry_count"] < MAX_RETRIES:
         return "transform_query"
@@ -68,10 +75,12 @@ def decide_next_step(state: AgentState) -> str:
         return "generate"
 
 # ---- Node 3: Transform query (reformulate if retrieval was poor) ----
+@observe()
 def transform_query(state: AgentState) -> AgentState:
     print(f"[REFORMULATE] Original retrieval was weak. Rewriting query (attempt {state['retry_count'] + 1})...")
     prompt = f"""The following question did not retrieve relevant results from a documentation search.
 Rewrite it as a clearer, more specific search query, focused on the same intent.
+IMPORTANT: "RAG" means "Retrieval-Augmented Generation" - do not expand or reinterpret this acronym as anything else.
 Original question: {state['original_question']}
 
 Reply with ONLY the rewritten query, nothing else."""
@@ -86,6 +95,7 @@ Reply with ONLY the rewritten query, nothing else."""
     return {**state, "question": new_query, "retry_count": state["retry_count"] + 1}
 
 # ---- Node 4: Generate final answer ----
+@observe()
 def generate(state: AgentState) -> AgentState:
     print("[GENERATE] Producing final answer...")
     context = "\n\n".join(state["documents"]) if state["documents"] else "No relevant context found."
@@ -127,11 +137,9 @@ def build_agent():
 
     return graph.compile()
 
-# ---- Run it ----
-if __name__ == "__main__":
+@observe(name="agentic-rag-run")
+def run_agent(question: str):
     agent = build_agent()
-
-    question = "What is the difference between naive RAG and agentic RAG?"
     initial_state = {
         "question": question,
         "original_question": question,
@@ -140,11 +148,18 @@ if __name__ == "__main__":
         "generation": "",
         "retry_count": 0
     }
-
     result = agent.invoke(initial_state)
+    return result
+
+# ---- Run it ----
+if __name__ == "__main__":
+    question = "What are the main components of an agentic RAG system?"
+    result = run_agent(question)
 
     print("\n" + "="*50)
     print("FINAL ANSWER:")
     print("="*50)
     print(result["generation"])
     print(f"\nSources used: {set(result['sources'])}")
+
+    langfuse.flush() # Ensures trace data is sent before script exits

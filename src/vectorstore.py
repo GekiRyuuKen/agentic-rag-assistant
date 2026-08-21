@@ -14,7 +14,10 @@ def build_vectorstore(chunks, persist_dir="chroma_db", collection_name="rag_pape
     if collection_name in existing:
         client.delete_collection(collection_name)
 
-    collection = client.create_collection(collection_name)
+    collection = client.create_collection(
+        collection_name,
+        metadata={"hnsw:space": "cosine"}
+    )
 
     texts = [chunk["text"] for chunk in chunks]
     ids = [chunk["chunk_id"] for chunk in chunks]
