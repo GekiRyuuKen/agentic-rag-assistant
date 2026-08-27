@@ -1,3 +1,4 @@
+import json
 import ollama
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
@@ -20,13 +21,30 @@ class AgentState(TypedDict):
     generation: str
     retry_count: int
 
+def load_parent_store():
+    with open("parent_store.json", "r", encoding="utf-8") as f:
+        return json.load(f)
+
 # ---- Node 1: Retrieve ----
 @observe()
 def retrieve(state: AgentState) -> AgentState:
     print(f"\n[RETRIEVE] Searching for: '{state['question']}'")
     results = query_vectorstore(state["question"], n_results=6)
-    docs = results["documents"][0]
-    sources = [meta["source"] for meta in results["metadatas"][0]]
+
+    parent_store = load_parent_store()
+    seen_parents = set()
+    docs = []
+    sources = []
+
+    for meta in results["metadatas"][0]:
+        parent_id = meta.get("parent_id")
+        if parent_id and parent_id not in seen_parents:
+            seen_parents.add(parent_id)
+            parent = parent_store.get(parent_id)
+            if parent:
+                docs.append(parent["text"])
+                sources.append(parent["source"])
+
     return {**state, "documents": docs, "sources": sources}
 
 # ---- Node 2: Grade documents (this is the "agentic" judgement step) ----
@@ -99,9 +117,12 @@ Reply with ONLY the rewritten query, nothing else."""
 def generate(state: AgentState) -> AgentState:
     print("[GENERATE] Producing final answer...")
     context = "\n\n".join(state["documents"]) if state["documents"] else "No relevant context found."
+    print(f"\n[DEBUG] Full context sent to generation:\n{context}\n")
 
-    prompt = f"""Answer the question using ONLY the context provided below. 
-If the context doesn't contain enough information, say so honestly.
+    prompt = f"""Answer the question using ONLY the context provided below.
+"RAG" means "Retrieval-Augmented Generation" - never expand or reinterpret this acronym as anything else.
+Do not invent section numbers, quotes, or details that are not explicitly present in the context below.
+If the context doesn't contain enough information, say so honestly - do not guess or infer beyond what is stated.
 
 Context:
 {context}

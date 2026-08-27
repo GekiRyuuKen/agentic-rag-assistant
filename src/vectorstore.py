@@ -1,3 +1,4 @@
+import json
 import chromadb
 from sentence_transformers import SentenceTransformer
 from ingest import load_documents, chunk_documents, filter_noise
@@ -21,7 +22,7 @@ def build_vectorstore(chunks, persist_dir="chroma_db", collection_name="rag_pape
 
     texts = [chunk["text"] for chunk in chunks]
     ids = [chunk["chunk_id"] for chunk in chunks]
-    metadatas = [{"source": chunk["source"]} for chunk in chunks]
+    metadatas = [{"source": chunk["source"], "parent_id": chunk["parent_id"]} for chunk in chunks]
 
     print(f"Embedding {len(texts)} chunks...")
     embeddings = embedding_model.encode(texts, show_progress_bar=True).tolist()
@@ -45,14 +46,19 @@ def query_vectorstore(query, persist_dir="chroma_db", collection_name="rag_paper
     return results
 
 if __name__ == "__main__":
-    docs = load_documents()
-    chunks = chunk_documents(docs)
-    chunks = filter_noise(chunks)
+    from ingest import load_documents, chunk_with_parents, filter_noise
 
-    build_vectorstore(chunks)
+    docs = load_documents()
+    parent_store, child_chunks = chunk_with_parents(docs)
+    child_chunks = filter_noise(child_chunks)
+
+    with open("parent_store.json", "w", encoding="utf-8") as f:
+        json.dump(parent_store, f)
+
+    build_vectorstore(child_chunks)
 
     # Quick retrieval test
-    test_query = "What is the difference between naive RAG and agentic RAG?"
+    test_query = "What are the main components of an agentic RAG system?"
     print(f"\n--- Test query: '{test_query}' ---")
     results = query_vectorstore(test_query)
 

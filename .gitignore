@@ -1,5 +1,6 @@
 venv/
 chroma_db/
+parent_store.json
 __pycache__/
 *.pyc
 .env

@@ -39,6 +39,39 @@ def load_documents(data_dir=DATA_DIR):
             print(f"Loaded {filename} - {len(text)} characters")
     return documents
 
+def chunk_with_parents(documents, parent_chunk_size=2000, parent_overlap=200, child_chunk_size=500, child_overlap=50):
+    """Split each document into large parent chunks, then each parent into small child chunks for embedding."""
+    parent_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=parent_chunk_size,
+        chunk_overlap=parent_overlap
+    )
+    child_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=child_chunk_size,
+        chunk_overlap=child_overlap
+    )
+
+    parent_store = {}
+    child_chunks = []
+
+    for doc in documents:
+        parents = parent_splitter.split_text(doc["text"])
+        for p_i, parent_text in enumerate(parents):
+            parent_id = f"{doc['source']}_parent_{p_i}"
+            parent_store[parent_id] = {
+                "text": parent_text,
+                "source": doc["source"]
+            }
+            children = child_splitter.split_text(parent_text)
+            for c_i, child_text in enumerate(children):
+                child_chunks.append({
+                    "source": doc["source"],
+                    "chunk_id": f"{parent_id}_child_{c_i}",
+                    "text": child_text,
+                    "parent_id": parent_id
+                })
+
+    return parent_store, child_chunks
+
 def chunk_documents(documents, chunk_size=500, chunk_overlap=50):
     """Split each document's text into overlapping chunks."""
     splitter = RecursiveCharacterTextSplitter(
