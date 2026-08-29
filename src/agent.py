@@ -1,6 +1,7 @@
 import os
 import json
 import ollama
+from functools import lru_cache
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
 from tavily import TavilyClient
@@ -25,7 +26,9 @@ class AgentState(TypedDict):
     generation: str
     retry_count: int
 
+@lru_cache(maxsize=1)
 def load_parent_store():
+    """Load parent_store.json once per process; subsequent calls return the cached dict."""
     with open("parent_store.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
