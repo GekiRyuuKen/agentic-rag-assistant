@@ -1,16 +1,20 @@
+import os
 import json
 import ollama
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
+from tavily import TavilyClient
 from vectorstore import query_vectorstore
 from dotenv import load_dotenv
 from langfuse import observe, get_client
 
 load_dotenv()
 langfuse = get_client()
+tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 LLM_MODEL = "llama3.1:8b"
 MAX_RETRIES = 2
+MAX_SNIPPET_CHARS = 600
 
 # ---- Define the shared state that flows through the graph ----
 class AgentState(TypedDict):
@@ -46,6 +50,60 @@ def retrieve(state: AgentState) -> AgentState:
                 sources.append(parent["source"])
 
     return {**state, "documents": docs, "sources": sources}
+
+# ---- Alternative Node: Web search via Tavily ----
+@observe()
+def web_search(state: AgentState) -> AgentState:
+    print(f"\n[WEB SEARCH] Querying Tavily for: '{state['question']}'")
+    response = tavily.search(
+        query=state["question"],
+        search_depth="basic",          # explicit: shortest snippets, no deep extraction
+        max_results=5,
+        include_answer="advanced",     # Tavily-synthesized, cited summary of the hits
+        exclude_domains=["reddit.com", "x.com", "twitter.com", "facebook.com"],
+    )
+
+    docs = []
+    sources = []
+
+    answer = response.get("answer")
+    if answer:
+        docs.append(f"Web search summary: {answer}")
+
+    for result in response["results"]:
+        snippet = (result.get("content") or "").strip()
+        if snippet:
+            docs.append(snippet[:MAX_SNIPPET_CHARS])
+            sources.append(result["url"])
+
+    print(f"  Retrieved {len(sources)} results (synthesized answer: {bool(answer)})")
+    return {**state, "documents": docs, "sources": sources}
+
+# ---- Conditional entry point: route the question to vectorstore or web search ----
+@observe()
+def route_question(state: AgentState) -> str:
+    print(f"[ROUTE] Deciding path for: '{state['question']}'")
+    prompt = f"""You are routing a user question to the best data source.
+
+Use "vectorstore" for questions about RAG, Agentic RAG, or Retrieval-Augmented Generation
+research concepts, architectures, and techniques.
+Use "web_search" for anything else (current events, general knowledge, other topics).
+
+Question: {state['question']}
+
+Reply with only one word: "vectorstore" or "web_search"."""
+
+    response = ollama.chat(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    decision = response["message"]["content"].strip().lower()
+
+    if "web_search" in decision:
+        print("  -> web_search")
+        return "web_search"
+    print("  -> vectorstore")
+    return "vectorstore"
 
 # ---- Node 2: Grade documents (this is the "agentic" judgement step) ----
 @observe()
@@ -142,12 +200,17 @@ def build_agent():
     graph = StateGraph(AgentState)
 
     graph.add_node("retrieve", retrieve)
+    graph.add_node("web_search", web_search)
     graph.add_node("grade_documents", grade_documents)
     graph.add_node("transform_query", transform_query)
     graph.add_node("generate", generate)
 
-    graph.set_entry_point("retrieve")
+    graph.set_conditional_entry_point(
+        route_question,
+        {"vectorstore": "retrieve", "web_search": "web_search"}
+    )
     graph.add_edge("retrieve", "grade_documents")
+    graph.add_edge("web_search", "generate")
     graph.add_conditional_edges(
         "grade_documents",
         decide_next_step,
