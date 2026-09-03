@@ -11,19 +11,22 @@ I work in Application Observability at TCS, where the core skill is tracing *why
 ## Architecture
 
     User question
-         |
-         v
-     [Retrieve] -- ChromaDB vector search (cosine similarity) over embedded child chunks
-         |
-         v
-     [Grade] -- LLM judges each retrieved chunk for genuine relevance (not just topic overlap)
-         |
-         +-- Enough relevant chunks? --Yes--> [Generate] --> Answer
-         |
-         No
-         |
-         v
-     [Reformulate query] --> back to [Retrieve] (up to 2 retries)
+     |
+     v
+ [Retrieve] -- ChromaDB vector search (cosine similarity) over embedded child chunks, widened to 12 candidates
+     |
+     v
+ [Rerank] -- Local cross-encoder (ms-marco-MiniLM-L-6-v2) scores candidates against the question, keeps top 6
+     |
+     v
+ [Grade] -- LLM judges each retrieved chunk for genuine relevance (not just topic overlap)
+     |
+     +-- Enough relevant chunks? --Yes--> [Generate] --> Answer
+     |
+     No
+     |
+     v
+ [Reformulate query] --> back to [Retrieve] (up to 2 retries)
 
 Retrieval uses **Parent-Document Retrieval**: small chunks are embedded for accurate search, but the full parent passage is passed to grading/generation — this avoids losing information cut off at chunk boundaries (see *Key Debugging Findings* below).
 
@@ -36,6 +39,7 @@ Retrieval uses **Parent-Document Retrieval**: small chunks are embedded for accu
 - **LLM:** Llama 3.1 8B, run locally via Ollama (no external API calls or costs)
 - **Observability:** Langfuse (full pipeline tracing — every node's inputs, outputs, and latency)
 - **Frontend:** Streamlit
+- **Reranking:** sentence-transformers CrossEncoder (ms-marco-MiniLM-L-6-v2), run locally on CPU
 
 ## Key Debugging Findings
 
@@ -45,6 +49,7 @@ Real issues found and fixed during development, using Langfuse tracing and direc
 - **Query reformulation hallucinated an acronym expansion** — the LLM invented an incorrect expansion of "RAG" while rewriting a failed query. Fixed by explicitly constraining the reformulation prompt.
 - **Generation hallucinated a fake section number and quote** when given weak context, instead of admitting insufficient information — fixed with a stricter, more explicit grounding instruction.
 - **Chunk-boundary information loss** — a retrieved chunk stated "there are three components" but was cut off before listing them, since the full explanation spanned a chunk boundary. Fixed by implementing Parent-Document Retrieval.
+- **Reranking improved efficiency but not uniformly answer depth** — adding a cross-encoder reranking step before grading reduced retry cycles (more questions resolved in a single pass), but testing across multiple questions showed it doesn't always agree with what LLM-based grading would surface as most relevant. On ambiguous questions, the reranker's lexical/semantic scoring sometimes favored more general or tangential passages over the most contextually precise one, though generation stayed honestly grounded in every case — no hallucinations introduced. This highlighted that different relevance signals (cross-encoder scoring vs. LLM contextual judgment) can genuinely disagree, and that's worth knowing rather than assuming reranking is a strict upgrade.
 
 ## Setup
 
@@ -61,5 +66,4 @@ Real issues found and fixed during development, using Langfuse tracing and direc
 ## Possible Next Steps
 
 - HyDE (Hypothetical Document Embeddings) for improved retrieval matching
-- Dedicated reranking step (e.g. cross-encoder) as an alternative to LLM-based grading
-- A second agent tool (e.g. live web search) for genuine multi-tool routing decisions
+- A second agent tool beyond web search (e.g. a calculator, structured API) for broader multi-tool routing

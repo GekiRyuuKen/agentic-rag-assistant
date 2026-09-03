@@ -4,6 +4,7 @@ import ollama
 from functools import lru_cache
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
+from sentence_transformers import CrossEncoder
 from tavily import TavilyClient
 from vectorstore import query_vectorstore
 from dotenv import load_dotenv
@@ -16,6 +17,9 @@ tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 LLM_MODEL = "llama3.1:8b"
 MAX_RETRIES = 2
 MAX_SNIPPET_CHARS = 600
+RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_CANDIDATES = 12   # widened pool pulled from ChromaDB
+RERANK_TOP_K = 6         # how many survive into grade_documents
 
 # ---- Define the shared state that flows through the graph ----
 class AgentState(TypedDict):
@@ -32,11 +36,16 @@ def load_parent_store():
     with open("parent_store.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
+@lru_cache(maxsize=1)
+def get_reranker():
+    """Load the cross-encoder once per process (CPU, to leave the GPU for Ollama)."""
+    return CrossEncoder(RERANKER_MODEL, device="cpu")
+
 # ---- Node 1: Retrieve ----
 @observe()
 def retrieve(state: AgentState) -> AgentState:
     print(f"\n[RETRIEVE] Searching for: '{state['question']}'")
-    results = query_vectorstore(state["question"], n_results=6)
+    results = query_vectorstore(state["question"], n_results=RERANK_CANDIDATES)
 
     parent_store = load_parent_store()
     seen_parents = set()
@@ -53,6 +62,32 @@ def retrieve(state: AgentState) -> AgentState:
                 sources.append(parent["source"])
 
     return {**state, "documents": docs, "sources": sources}
+
+# ---- Node 1b: Rerank retrieved parents with a cross-encoder ----
+@observe()
+def rerank(state: AgentState) -> AgentState:
+    docs = state["documents"]
+    sources = state["sources"]
+    print(f"[RERANK] Scoring {len(docs)} candidate parents against the question...")
+
+    if not docs:
+        return state
+
+    reranker = get_reranker()
+    pairs = [(state["original_question"], doc) for doc in docs]
+    scores = reranker.predict(pairs)
+
+    ranked = sorted(zip(scores, docs, sources), key=lambda t: t[0], reverse=True)
+    top = ranked[:RERANK_TOP_K]
+
+    for score, _, src in top:
+        print(f"  {float(score):+.3f}  {src}")
+
+    return {
+        **state,
+        "documents": [doc for _, doc, _ in top],
+        "sources": [src for _, _, src in top],
+    }
 
 # ---- Alternative Node: Web search via Tavily ----
 @observe()
@@ -203,6 +238,7 @@ def build_agent():
     graph = StateGraph(AgentState)
 
     graph.add_node("retrieve", retrieve)
+    graph.add_node("rerank", rerank)
     graph.add_node("web_search", web_search)
     graph.add_node("grade_documents", grade_documents)
     graph.add_node("transform_query", transform_query)
@@ -212,7 +248,8 @@ def build_agent():
         route_question,
         {"vectorstore": "retrieve", "web_search": "web_search"}
     )
-    graph.add_edge("retrieve", "grade_documents")
+    graph.add_edge("retrieve", "rerank")
+    graph.add_edge("rerank", "grade_documents")
     graph.add_edge("web_search", "generate")
     graph.add_conditional_edges(
         "grade_documents",
